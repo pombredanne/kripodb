@@ -1,13 +1,19 @@
-# install Kripodb itself
--e .
 # requirements for development of kripodb
-nose
-coverage
+pytest==3.0.7
+pytest-cov==2.4.0
 setuptools>=18.8.1
 six>=1.7
-mock
-sphinx
-webtest
-requests_mock
+mock==2.0.0
+webtest==2.0.27
+requests-mock==1.3.0
+# Document generation
+sphinx==1.6.2
+sphinx-rtd-theme==0.2.4
+sphinx-argparse==0.1.17
 # for faster pydev debugging
-cython
+cython==0.25.2
+# pinned deps
+connexion==1.1.9
+swagger-spec-validator==2.1.0
+# install Kripodb itself
+-e .

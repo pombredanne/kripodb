@@ -120,11 +120,13 @@ class FastInserter(object):
 
     def __enter__(self):
         # increase insert speed, this is less safe
+        self.cursor.connection.commit()
         self.cursor.execute('PRAGMA journal_mode=WAL')
         self.cursor.execute('PRAGMA synchronous=OFF')
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # switch back to default journal, so db file can be read-only and is safe again
+        self.cursor.connection.commit()
         self.cursor.execute('PRAGMA journal_mode=DELETE')
         self.cursor.execute('PRAGMA synchronous=FULL')
 
@@ -215,7 +217,7 @@ class FragmentsDb(SqliteDb):
         """Adds molecules to to molecules table.
 
         Args:
-            mols (List[rdkit.Chem.Mol]): List of molecules
+            mols (list[rdkit.Chem.Mol]): List of molecules
         """
         with FastInserter(self.cursor):
             for mol in mols:
@@ -236,18 +238,19 @@ class FragmentsDb(SqliteDb):
                 if pdb['structureId'].lower() + pdb['chainId'] in pdbs_in_fragments:
                     self.add_pdb(pdb)
 
-    def add_fragments_from_shelve(self, myshelve):
+    def add_fragments_from_shelve(self, myshelve, skipdups=False):
         """Adds fragments from shelve to fragments table.
 
         Also creates index on pdb_code column.
 
         Args:
             myshelve (Dict[Fragment]): Dictionary with fragment identifier as key and fragment as value.
+            skipdups (bool): Skip duplicates, instead of dieing one first duplicate
 
         """
         with FastInserter(self.cursor):
             for k, v in six.iteritems(myshelve):
-                self.add_fragment_from_shelve(k, v)
+                self.add_fragment_from_shelve(k, v, skipdups)
 
         self.cursor.execute('CREATE INDEX IF NOT EXISTS fragments_pdb_code_i ON fragments (pdb_code)')
 
@@ -256,8 +259,6 @@ class FragmentsDb(SqliteDb):
 
         Args:
             mol (rdkit.Chem.AllChem.Mol): the rdkit molecule
-
-        Returns:
 
         """
         sql = '''INSERT OR REPLACE INTO molecules (frag_id, smiles, mol) VALUES (?, ?, ?)'''
@@ -274,8 +275,8 @@ class FragmentsDb(SqliteDb):
 
         self.connection.commit()
 
-    def add_fragment_from_shelve(self, frag_id, fragment):
-        sql = '''INSERT OR REPLACE INTO fragments (
+    def add_fragment_from_shelve(self, frag_id, fragment, skipdups=False):
+        sql = '''INSERT INTO fragments (
             frag_id,
             pdb_code,
             prot_chain,
@@ -313,8 +314,9 @@ class FragmentsDb(SqliteDb):
         lig_id = fragment['ligID'].split('-')
         het_seq_nr = int(re.sub('[A-Z]$', '', lig_id[3]))
 
+        frag_id = frag_id.replace('-', '_')
         row = {
-            'frag_id': frag_id.replace('-', '_'),
+            'frag_id': frag_id,
             'pdb_code': splitted_frag_id[0],
             'prot_chain': lig_id[1],
             'het_code': splitted_frag_id[1],
@@ -326,7 +328,12 @@ class FragmentsDb(SqliteDb):
             'nr_r_groups': int(fragment['numRgroups']),
         }
 
-        self.cursor.execute(sql, row)
+        try:
+            self.cursor.execute(sql, row)
+        except sqlite3.IntegrityError as e:
+            logging.warning('Duplicate ID: {}, skipping'.format(frag_id))
+            if not skipdups:
+                raise e
 
     def add_pdb(self, pdb):
         sql = '''INSERT OR REPLACE INTO pdbs (
@@ -374,7 +381,7 @@ class FragmentsDb(SqliteDb):
         row = self.cursor.fetchone()
 
         if row is None:
-            raise KeyError("'{}' not found".format(key))
+            raise KeyError(key)
 
         return _row2fragment(row)
 
@@ -385,13 +392,19 @@ class FragmentsDb(SqliteDb):
             pdb_code (str): PDB code
 
         Returns:
-            List[Fragment]
+            List[Fragment]: List of fragments
+
+        Raises:
+            LookupError: When pdb_code could not be found
 
         """
         fragments = []
         sql = self.select_sql + 'WHERE pdb_code=? ORDER BY frag_id'
         for row in self.cursor.execute(sql, (pdb_code,)):
             fragments.append(_row2fragment(row))
+
+        if len(fragments) == 0:
+            raise LookupError(pdb_code)
 
         return fragments
 
